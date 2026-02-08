@@ -1,0 +1,335 @@
+# RISC-V RV64I + Zba Processor - Toolchain Build Commands
+# 
+# This document contains all commands needed to:
+# 1. Compile C source code to RISC-V assembly
+# 2. Assemble assembly to object file
+# 3. Link to create ELF executable
+# 4. Extract machine code hex for simulation
+#
+# Prerequisites:
+# - RISC-V GCC toolchain installed (riscv64-unknown-elf)
+# - binutils installed (riscv64-unknown-elf-*)
+# - Standard Unix tools (objdump, xxd, etc.)
+#
+# For Ubuntu/Debian:
+# sudo apt-get install gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf
+#
+# For Fedora:
+# sudo dnf install gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf
+
+# ============================================================================
+# DIRECTORY SETUP
+# ============================================================================
+
+# Navigate to project root
+cd /home/humza/pmp_test/rv64i_zba_core
+
+# Set environment variables for build
+export RISCV_PREFIX=riscv64-unknown-elf-
+export CC="${RISCV_PREFIX}gcc"
+export LD="${RISCV_PREFIX}ld"
+export OBJDUMP="${RISCV_PREFIX}objdump"
+export OBJCOPY="${RISCV_PREFIX}objcopy"
+
+# Create output directories if they don't exist
+mkdir -p build/
+mkdir -p hw_sim/
+
+# ============================================================================
+# STEP 1: COMPILE C SOURCE TO RISC-V ASSEMBLY
+# ============================================================================
+# 
+# Input:  sw/test.c
+# Output: build/test.s
+# 
+# Compiler flags explained:
+#   -march=rv64i_zba        : Target ISA (RV64I base + Zba extension)
+#   -mabi=lp64              : 64-bit ABI (long/pointer are 64-bit)
+#   -O2                     : Optimization level 2 (good balance)
+#   -nostdlib               : Don't link with standard library (bare metal)
+#   -fno-builtin            : Don't use compiler builtins
+#   -S                      : Compile to assembly only (no assemble)
+#   -ffunction-sections     : Place each function in its own section
+#   -fdata-sections         : Place each variable in its own section
+
+${CC} -march=rv64i_zba -mabi=lp64 -O2 \
+    -nostdlib -fno-builtin \
+    -S \
+    -ffunction-sections -fdata-sections \
+    -o build/test.s \
+    sw/test.c
+
+echo "✓ Assembly generated: build/test.s"
+
+# ============================================================================
+# ALTERNATIVE STEP 1: Compile with explicit enable of Zba
+# ============================================================================
+# If -march=rv64i_zba doesn't work, try:
+#
+# ${CC} -march=rv64i -mext-zba -mabi=lp64 -O2 \
+#     -nostdlib -fno-builtin \
+#     -S \
+#     -o build/test.s \
+#     sw/test.c
+
+# ============================================================================
+# STEP 2: ASSEMBLE ASSEMBLY TO OBJECT FILE
+# ============================================================================
+#
+# Input:  build/test.s
+# Output: build/test.o
+#
+# Flags:
+#   -march=rv64i_zba        : Same ISA specification
+#   -mabi=lp64              : Same ABI
+#   -o                      : Output file
+#   -c                      : Compile (assemble only, don't link)
+
+${CC} -march=rv64i_zba -mabi=lp64 \
+    -c \
+    -o build/test.o \
+    build/test.s
+
+echo "✓ Object file generated: build/test.o"
+
+# ============================================================================
+# STEP 3: LINK TO CREATE ELF EXECUTABLE
+# ============================================================================
+#
+# Input:  build/test.o
+# Output: build/test.elf
+#
+# Notes:
+#   - Uses custom linker script (linker.ld) to place code at address 0x00000000
+#   - All sections are placed sequentially starting at 0x00000000
+#   - No dynamic linking, no startup routines
+#   - Entry point is main() function
+
+${CC} -march=rv64i_zba -mabi=lp64 \
+    -nostdlib -fno-builtin \
+    -Wl,-Ttext=0x00000000 \
+    -o build/test.elf \
+    build/test.o
+
+echo "✓ ELF executable generated: build/test.elf"
+
+# ============================================================================
+# STEP 4: VERIFY ELF FILE
+# ============================================================================
+#
+# Display ELF header, sections, and symbol information
+
+${OBJDUMP} -h build/test.elf
+
+echo ""
+echo "✓ ELF sections displayed above"
+
+# ============================================================================
+# STEP 5: EXTRACT MACHINE CODE TO ASSEMBLY LISTING
+# ============================================================================
+#
+# Input:  build/test.elf
+# Output: build/test_disasm.txt
+#
+# This creates a human-readable assembly with addresses and machine code
+# Useful for debugging and understanding what the compiler generated
+
+${OBJDUMP} -d build/test.elf > build/test_disasm.txt
+
+echo "✓ Disassembly generated: build/test_disasm.txt"
+
+# ============================================================================
+# STEP 6: EXTRACT RAW BINARY FROM ELF
+# ============================================================================
+#
+# Input:  build/test.elf
+# Output: build/test.bin
+#
+# This extracts the .text section as raw binary (just machine code bytes)
+# Needed to create hex file for memory initialization
+
+${OBJCOPY} -O binary build/test.elf build/test.bin
+
+echo "✓ Raw binary extracted: build/test.bin"
+
+# ============================================================================
+# STEP 7: CONVERT BINARY TO HEX FOR TESTBENCH
+# ============================================================================
+#
+# Input:  build/test.bin
+# Output: build/test.hex
+#
+# Creates hex dump formatted as:
+#   @00000000          (start address)
+#   AABBCCDDEE...      (machine code bytes, 16 per line)
+#
+# This format is compatible with $readmemh() in SystemVerilog testbenches
+#
+# Command: xxd creates hex dump, sed:
+#   - Removes address field (first ~9 chars)
+#   - Removes ASCII representation (last ~16 chars)
+#   - Removes spaces
+#   - Converts lowercase to uppercase
+
+xxd -p build/test.bin | sed 's/ //g' | tr '[:lower:]' '[:upper:]' > build/test.hex
+
+# Alternative: Use od command if xxd not available
+# od -An -tx1 build/test.bin | sed 's/ //g' | tr '[:lower:]' '[:upper:]' > build/test.hex
+
+echo "✓ Hex file generated: build/test.hex"
+
+# ============================================================================
+# STEP 8: CREATE FORMATTED HEX FOR INSTRUCTION MEMORY INITIALIZATION
+# ============================================================================
+#
+# Input:  build/test.bin
+# Output: build/instr_mem.hex
+#
+# Creates hex formatted for $readmemh in SystemVerilog:
+#   @00000000                          (memory start address)
+#   32323334 35363738 39414243 44454647 (32-bit words, 4 per line)
+#
+# Our instruction memory is word-addressed, so we group hex into 32-bit (8 hex char) words
+
+python3 << 'EOF'
+import sys
+
+# Read binary file
+with open('build/test.bin', 'rb') as f:
+    binary_data = f.read()
+
+# Convert to hex string
+hex_str = binary_data.hex().upper()
+
+# Pad to multiple of 8 (32-bit word boundary)
+while len(hex_str) % 8 != 0:
+    hex_str += '0'
+
+# Create output with formatting for $readmemh
+output = "@00000000\n"
+
+# Group into 32-bit words
+for i in range(0, len(hex_str), 8):
+    word = hex_str[i:i+8]
+    output += word
+    # Add newline every 4 words (16 hex chars = 128 bits per line)
+    if (i // 8 + 1) % 4 == 0:
+        output += "\n"
+    else:
+        output += " "
+
+# Write output file
+with open('build/instr_mem.hex', 'w') as f:
+    f.write(output)
+
+print("✓ Formatted hex file created: build/instr_mem.hex")
+EOF
+
+# ============================================================================
+# STEP 9: DISPLAY RESULTS
+# ============================================================================
+
+echo ""
+echo "============================================================================"
+echo "Build Summary"
+echo "============================================================================"
+echo ""
+echo "Source file:          sw/test.c"
+echo "Assembly file:        build/test.s"
+echo "Object file:          build/test.o"
+echo "ELF executable:       build/test.elf"
+echo "Raw binary:           build/test.bin"
+echo "Hex memory file:      build/test.hex"
+echo "Formatted hex:        build/instr_mem.hex"
+echo "Disassembly:          build/test_disasm.txt"
+echo ""
+
+# Display file sizes
+echo "File sizes:"
+ls -lh build/test.* | awk '{print "  " $9 ": " $5}'
+echo ""
+
+# Show first few instructions
+echo "First 20 instructions (from disassembly):"
+head -30 build/test_disasm.txt | tail -20
+echo ""
+
+echo "============================================================================"
+echo "✓ Build complete! Ready for simulation"
+echo "============================================================================"
+
+# ============================================================================
+# STEP 10: LOAD INTO TESTBENCH
+# ============================================================================
+#
+# Copy hex file to location accessible by testbench:
+# cp build/instr_mem.hex hw_sim/instr_mem.hex
+#
+# In testbench, use:
+# $readmemh("hw_sim/instr_mem.hex", instr_mem);
+
+# ============================================================================
+# TROUBLESHOOTING
+# ============================================================================
+#
+# If toolchain commands fail:
+#
+# 1. Check if RISC-V tools are installed:
+#    which riscv64-unknown-elf-gcc
+#    riscv64-unknown-elf-gcc --version
+#
+# 2. Check ISA support:
+#    riscv64-unknown-elf-gcc -march=rv64i_zba -Q --help=target | grep march
+#
+# 3. For architecture not recognized:
+#    - Try: -march=rv64i instead (without _zba)
+#    - Or:  -march=rv64i -Xassembler -march=rv64i_zba
+#
+# 4. Check generated assembly has Zba instructions:
+#    grep -E "sh1add|sh2add|sh3add|add\.uw|sh.*add\.uw" build/test_disasm.txt
+#
+# 5. Verify object file was created:
+#    file build/test.o
+#    riscv64-unknown-elf-readelf -h build/test.o
+#
+# 6. Check ELF sections:
+#    riscv64-unknown-elf-readelf -S build/test.elf
+#    riscv64-unknown-elf-objdump -h build/test.elf
+
+# ============================================================================
+# ADVANCED: EXTRACT SPECIFIC SECTIONS
+# ============================================================================
+#
+# Extract .text section only:
+# ${OBJCOPY} -O binary -j .text build/test.elf build/test_text.bin
+#
+# Extract .data section only:
+# ${OBJCOPY} -O binary -j .data build/test.elf build/test_data.bin
+#
+# List all sections:
+# ${OBJCOPY} -O binary --dump-section .text=build/test.txt build/test.elf
+
+# ============================================================================
+# NOTES FOR TESTBENCH INTEGRATION
+# ============================================================================
+#
+# 1. Word-addressed vs Byte-addressed:
+#    - Instruction memory in testbench: word-addressed (PC/4)
+#    - Hex file: 32-bit words aligned
+#    - $readmemh will automatically handle alignment
+#
+# 2. Memory initialization in testbench:
+#    reg [31:0] instr_mem [0:1023];  // 1K instructions (4K bytes)
+#    initial $readmemh("build/instr_mem.hex", instr_mem);
+#
+# 3. Data memory initialization:
+#    If you need data section in simulation:
+#    reg [63:0] data_mem [0:4095];   // 32K bytes (4K doublewords)
+#    initial $readmemh("build/data_mem.hex", data_mem);
+#
+# 4. Ensure hex file is in correct format by checking first few lines:
+#    head build/instr_mem.hex
+#    Output should be:
+#    @00000000
+#    AABBCCDD EEFF0011 22334455 66778899
+#    ...
